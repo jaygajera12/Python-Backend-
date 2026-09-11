@@ -622,16 +622,22 @@ def generate_image_with_gemini(reference_image_path: str, generation_prompt: str
         mime = {'.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.png':'image/png', '.webp':'image/webp'}.get(ext, 'image/png')
         return {'inline_data': {'mime_type': mime, 'data': base64.b64encode(data).decode('utf-8')}}
 
-    # The final request contains the actual references so the image model can
-    # visually preserve the saree and especially the uploaded lace.
+    # IMPORTANT: DO NOT SEND THE LACE IMAGE TO GEMINI.
+    # Gemini must never redraw/reinterpret the lace. The original lace pixels
+    # are composited locally after the single Gemini generation call.
     content_parts = [make_part(reference_image_path)]
-    if lace_image_path and os.path.exists(lace_image_path):
-        content_parts.append(make_part(lace_image_path))
     if crystal_image_path and os.path.exists(crystal_image_path):
         content_parts.append(make_part(crystal_image_path))
     if background_image_path and os.path.exists(background_image_path):
         content_parts.append(make_part(background_image_path))
-    content_parts.append(generation_prompt)
+    content_parts.append(
+        generation_prompt
+        + "\n\nABSOLUTE LACE RULE: The lace reference is intentionally NOT provided "
+          "to the image model. Do NOT create, redraw, invent, reconstruct, or "
+          "reinterpret any lace. Do not add a new lace border. The original lace "
+          "will be inserted later by deterministic local compositing. If any lace "
+          "would otherwise appear, leave that decorative lace detail out."
+    )
 
     response = gemini_client.models.generate_content(
         model=GEMINI_IMAGE_MODEL,
@@ -845,7 +851,7 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
     if image_size not in {'1K', '2K', '4K'}:
         image_size = '2K'
     # Final request is a SINGLE Gemini image-generation call.
-    # The actual saree/lace/crystal/background references are included in that one call.
+    # Only saree/crystal/background references are sent to Gemini. Lace is NEVER sent to Gemini; it is composited locally.
     design_context = json.dumps({
         'saree_design_analysis': opencv_analysis,
         'micro_lace_detection': lace_detection,
@@ -872,7 +878,7 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
         + '\n\nSTRUCTURED DESIGN DATA (TEXT ONLY — FOLLOW EXACTLY):\n'
         + design_context
             )
-    image_bytes_out, generated_mime = generate_image_with_gemini(saree_path, generated_prompt, image_size=image_size, background_image_path=background_path, lace_image_path=lace_path, crystal_image_path=crystal_reference_path, crystal_lock_instruction=crystal_lock_instruction)
+    image_bytes_out, generated_mime = generate_image_with_gemini(saree_path, generated_prompt, image_size=image_size, background_image_path=background_path, lace_image_path=None, crystal_image_path=crystal_reference_path, crystal_lock_instruction=crystal_lock_instruction)
     output_ext = '.png'
     if generated_mime == 'image/jpeg':
         output_ext = '.jpg'
@@ -899,7 +905,7 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
     with open(complete_metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
     save_request_metadata(request_id, {'request_id': request_id, 'status': 'complete_success', 'saree_reference': saree_name, 'lace_reference': lace_reference.get('file_name'), 'crystal_reference': crystal_reference_name, 'background_reference': background_name, 'design_lock': lock_name, 'generation_prompt': generation_name, 'generated_image': f'/generated/{output_name}'})
-    return {'success': True, 'request_id': request_id, 'status': 'complete_success', 'workflow': ['saree_uploaded', 'request_id_created', 'design_analyzed', 'design_lock_created', 'micro_lace_detected', 'swarovski_type_crystal_read', 'crystal_design_locked', 'generation_prompt_created', 'final_image_generated'], 'references': {'saree': saree_name, 'micro_lace': lace_reference, 'crystal_reference': {'file_name': crystal_reference_name, 'url': f'/crystal-references/{crystal_reference_name}', 'read': crystal_read} if crystal_reference_name else None, 'background': background_name}, 'lace_design_lock': {'locked': True, 'scale': 'micro', 'exact_visual_reference': True, 'pattern_locked': True, 'motif_sequence_locked': True, 'motif_density_locked': True, 'spacing_locked': True, 'width_locked': True, 'edge_shape_locked': True, 'stone_size_locked': True, 'allow_enlarge': False, 'allow_thicken': False, 'allow_redesign': False, 'allow_recolor': False, 'allow_invent': False}, 'files': {'design_lock': f'/design-maps/{lock_name}', 'generation_prompt': f'/design-maps/{generation_name}', 'final_image': f'/generated/{output_name}'}, 'generated_image': {'file_name': output_name, 'local_path': output_path, 'url': f'/generated/{output_name}', 'mime_type': generated_mime, 'model': GEMINI_IMAGE_MODEL, 'image_size': image_size}, 'custom_prompt': custom_prompt, 'performance': {'analysis_seconds': analysis_seconds, 'total_seconds': total_seconds}, 'message': 'LOW-COST mode: OpenCV local analysis -> local lace detection -> ONE Gemini 3.1 Flash Image generation call with reference images.'}
+    return {'success': True, 'request_id': request_id, 'status': 'complete_success', 'workflow': ['saree_uploaded', 'request_id_created', 'design_analyzed', 'design_lock_created', 'micro_lace_detected', 'swarovski_type_crystal_read', 'crystal_design_locked', 'generation_prompt_created', 'final_image_generated'], 'references': {'saree': saree_name, 'micro_lace': lace_reference, 'crystal_reference': {'file_name': crystal_reference_name, 'url': f'/crystal-references/{crystal_reference_name}', 'read': crystal_read} if crystal_reference_name else None, 'background': background_name}, 'lace_design_lock': {'locked': True, 'scale': 'micro', 'exact_visual_reference': True, 'pattern_locked': True, 'motif_sequence_locked': True, 'motif_density_locked': True, 'spacing_locked': True, 'width_locked': True, 'edge_shape_locked': True, 'stone_size_locked': True, 'allow_enlarge': False, 'allow_thicken': False, 'allow_redesign': False, 'allow_recolor': False, 'allow_invent': False}, 'files': {'design_lock': f'/design-maps/{lock_name}', 'generation_prompt': f'/design-maps/{generation_name}', 'final_image': f'/generated/{output_name}'}, 'generated_image': {'file_name': output_name, 'local_path': output_path, 'url': f'/generated/{output_name}', 'mime_type': generated_mime, 'model': GEMINI_IMAGE_MODEL, 'image_size': image_size}, 'custom_prompt': custom_prompt, 'performance': {'analysis_seconds': analysis_seconds, 'total_seconds': total_seconds}, 'message': 'LOW-COST mode: OpenCV local analysis -> local lace detection -> ONE Gemini 3.1 Flash Image generation call WITHOUT lace -> exact original lace pixels composited locally.'}
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run('main:app', host='0.0.0.0', port=8000)
