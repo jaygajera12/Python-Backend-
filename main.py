@@ -22,7 +22,6 @@ try:
 except ImportError:
     genai = None
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_ANALYSIS_MODEL = os.getenv('GEMINI_ANALYSIS_MODEL', 'gemini-3.7-flash')
 GEMINI_IMAGE_MODEL = os.getenv('GEMINI_IMAGE_MODEL', 'gemini-3.1-flash-image')
 UPLOAD_DIR = 'uploads'
 GENERATED_DIR = 'generated'
@@ -295,22 +294,6 @@ def analyze_saree_opencv(image_path: str, max_side: int=1200):
         pattern_level = 'high'
     analysis = {'detector': 'OpenCV', 'image': {'width': int(image.shape[1]), 'height': int(image.shape[0])}, 'colors': colors, 'pattern': {'edge_density_percent': round(edge_density * 100, 3), 'level': pattern_level}, 'fine_detail': {'candidate_count': len(bright_candidates), 'candidates': bright_candidates[:5000], 'note': 'Candidates are visual bright/reflective details. They are not automatically classified as Swarovski or Siroki.'}, 'texture_regions': {'count': len(texture_regions), 'regions': texture_regions}, 'horizontal_design_bands': horizontal_bands, 'side_border_candidates': side_borders, 'design_lock': {'preserve_colors': True, 'preserve_pattern': True, 'preserve_motifs': True, 'preserve_border': True, 'preserve_pallu': True, 'preserve_embroidery': True, 'preserve_reflective_details': True, 'do_not_redesign': True, 'reference_priority': 'highest'}}
     return (analysis, image, detail_map, bright_mask, texture_mask)
-SEMANTIC_PROMPT = '\nAnalyze the uploaded saree image as a professional Indian\ntextile/fashion designer.\n\nReturn ONLY valid JSON.\n\nOnly describe details that are visibly supported.\n\nIdentify:\n- saree type, if visible\n- dominant color\n- secondary colors\n- fabric appearance\n- body design\n- visible motif types\n- motif colors\n- motif arrangement\n- border description\n- border width\n- pallu description\n- pallu colors\n- embroidery\n- zari\n- crystal/stone-like decorative details\n- pattern density\n- any clearly visible special details\n\nDo not invent hidden details.\n\nThis is a DESIGN LOCK for a later image generator.\n\nTherefore explicitly preserve:\n- original colors\n- body pattern\n- visible motifs\n- motif arrangement\n- border\n- pallu\n- embroidery\n- zari\n- visible stones/crystals\n- overall visual identity\n\nDo NOT redesign the saree.\n'
-
-def semantic_ai_analysis(image_bytes, mime_type):
-    if not gemini_client:
-        return {'available': False, 'message': 'Gemini semantic analysis is disabled. OpenCV detection is still active. Set GEMINI_API_KEY to enable semantic analysis.'}
-    try:
-        response = gemini_client.models.generate_content(model=GEMINI_ANALYSIS_MODEL, contents=[{'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(image_bytes).decode('utf-8')}}, SEMANTIC_PROMPT], config=types.GenerateContentConfig(response_mime_type='application/json', automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
-        text = response.text or '{}'
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = {'raw': text, 'parse_error': True}
-        return {'available': True, 'model': GEMINI_ANALYSIS_MODEL, 'result': parsed}
-    except Exception as e:
-        return {'available': False, 'error': str(e)}
-
 def build_design_lock(opencv_analysis, semantic_analysis):
     semantic = {}
     if semantic_analysis.get('available') and isinstance(semantic_analysis.get('result'), dict):
@@ -393,135 +376,6 @@ def save_request_metadata(request_id: str, data: dict):
 
 def build_request_design_lock(request_id: str, combined_analysis: dict):
     return {'version': '1.0', 'request_id': request_id, 'status': 'design_locked', 'reference_images': combined_analysis.get('reference_images', 0), 'analysis': combined_analysis, 'preservation_rules': {'keep_original_color': True, 'keep_original_motifs': True, 'keep_motif_arrangement': True, 'keep_original_border': True, 'keep_original_pallu': True, 'keep_embroidery': True, 'keep_zari': True, 'keep_visible_crystals_or_stones': True, 'keep_pattern_density': True, 'do_not_recolor': True, 'do_not_redesign': True, 'do_not_invent_new_motifs': True, 'do_not_remove_visible_details': True, 'do_not_replace_reference_saree': True}, 'generation_instruction': 'Use the uploaded original saree image(s) as the primary garment reference. Only transform draping, pose and presentation. Preserve the original saree colors, motifs, border, pallu, embroidery, zari and visible decorative details as closely as possible.', 'generation_prompt_status': 'not_generated'}
-GENERATION_SPEC_SYSTEM_PROMPT = '\nYou are a professional Indian fashion / textile prompt engineer.\n\nYou will receive a DESIGN LOCK JSON created from OpenCV detection and\nGemini visual analysis of an uploaded saree reference.\n\nYour job is NOT to redesign the saree and NOT to generate an image.\nYour job is to convert the JSON into a precise image-generation\nspecification that a separate virtual try-on / image-generation model\ncan follow.\n\nCRITICAL PRESERVATION RULES:\n1. Preserve the original saree color.\n2. Preserve the original body pattern and motif arrangement.\n3. Preserve the border design, width and placement as supported by the data.\n4. Preserve the pallu design and visible placement.\n5. Preserve embroidery, zari and visible crystal/stone-like details.\n6. Do not invent missing details.\n7. Do not replace the saree with a generic saree.\n8. Do not recolor or redesign the garment.\n9. Only change presentation variables such as model, pose, drape,\n   camera/composition and background when requested.\n10. If a detail is uncertain or not supported by the JSON, say that it\n    must follow the uploaded reference image rather than guessing.\n\nReturn ONLY valid JSON with exactly these top-level keys:\n- generation_prompt\n- negative_prompt\n- model_requirements\n- preservation_lock\n\nThe generation_prompt must be a single detailed prompt for a separate\nimage-generation / virtual-try-on model.\n'
-
-def build_json_wise_gemini_prompt(design_lock: dict, custom_prompt: str='') -> str:
-    design_lock_json = json.dumps(design_lock, ensure_ascii=False, indent=2)
-    custom_section = ''
-    if custom_prompt.strip():
-        custom_section = f'\nUSER CUSTOM PROMPT:\n{custom_prompt.strip()}\n\nUse this custom prompt only for non-garment presentation variables such as\npose, camera angle, composition, background, lighting, mood, or styling.\nThe DESIGN LOCK and uploaded reference image always have higher priority.\nNever recolor, redesign, replace, remove, simplify, or invent saree details.\n'
-    return f'\nConvert this DESIGN LOCK JSON into a precise image-generation specification.\n\nDESIGN LOCK JSON:\n```json\n{design_lock_json}\n```\n\n{custom_section}\n\nThe generated model must be an adult Indian female fashion model.\nDefault presentation:\n- full body\n- elegant standing pose\n- premium Indian fashion catalogue photography\n- clean pure white background\n- realistic natural fabric drape\n- saree remains the primary visual subject\n- high detail and photorealistic finish\n\nRemember: do not create new saree details. The uploaded reference image and\nDESIGN LOCK have highest priority.\n'
-
-def gemini_json_wise_prompt(design_lock: dict, custom_prompt: str=''):
-    """Send the Design Lock JSON to Gemini and return structured JSON."""
-    if not gemini_client:
-        return {'available': False, 'message': 'Gemini generation-spec conversion is disabled. Set GEMINI_API_KEY to enable it.'}
-    try:
-        prompt = build_json_wise_gemini_prompt(design_lock, custom_prompt)
-        response = gemini_client.models.generate_content(model=GEMINI_ANALYSIS_MODEL, contents=[GENERATION_SPEC_SYSTEM_PROMPT, prompt], config=types.GenerateContentConfig(response_mime_type='application/json', automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
-        text = response.text or '{}'
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = {'raw': text, 'parse_error': True}
-        return {'available': True, 'model': GEMINI_ANALYSIS_MODEL, 'input_type': 'design_lock_json', 'result': parsed}
-    except Exception as e:
-        return {'available': False, 'error': str(e)}
-MICRO_LACE_DETECTION_PROMPT = '\nYou are an expert textile/fashion visual inspection system.\n\nAnalyze the uploaded saree/lace image at very high visual detail.\n\nTASK:\nLocate the exact visible MICRO LACE-PATTA / narrow decorative lace strip.\n\nImportant:\n- Detect the actual narrow lace/border strip, not the whole saree.\n- The lace may be a very thin vertical or horizontal strip.\n- Look for tiny repeated rhinestone/stone/thread motifs, micro geometry,\n  edging, piping and repeated pattern structure.\n- Do not confuse the large body print, pallu, floral print, or model with lace.\n- Return ONE best bounding box covering the complete useful lace strip.\n- Keep the box tight around the lace while including its full width and\n  enough surrounding fabric to understand its edge relationship.\n- Use normalized coordinates from 0 to 1.\n- x/y are the top-left corner.\n- width/height are normalized.\n- Also return orientation: "vertical", "horizontal", or "unknown".\n- Return JSON only.\n\nJSON schema:\n{\n  "found": true,\n  "confidence": 0.0,\n  "orientation": "vertical",\n  "bbox": {\n    "x": 0.0,\n    "y": 0.0,\n    "width": 0.0,\n    "height": 0.0\n  },\n  "description": "brief description of the micro lace"\n}\n\nIf no lace is visible:\n{\n  "found": false,\n  "confidence": 0.0,\n  "orientation": "unknown",\n  "bbox": {\n    "x": 0.0,\n    "y": 0.0,\n    "width": 0.0,\n    "height": 0.0\n  },\n  "description": ""\n}\n'
-
-def gemini_micro_lace_bbox(image_bytes: bytes, mime_type: str) -> dict:
-    """
-    Use Gemini 3.7 Flash to locate the exact micro-lace region.
-    Gemini returns normalized bbox coordinates; the original image is then
-    cropped locally without resizing.
-    """
-    if not gemini_client:
-        return {'available': False, 'found': False, 'message': 'Gemini client is not configured.'}
-    try:
-        response = gemini_client.models.generate_content(model=GEMINI_ANALYSIS_MODEL, contents=[{'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(image_bytes).decode('utf-8')}}, MICRO_LACE_DETECTION_PROMPT], config=types.GenerateContentConfig(response_mime_type='application/json', automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
-        raw_text = (response.text or '{}').strip()
-        try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError:
-            start = raw_text.find('{')
-            end = raw_text.rfind('}')
-            if start >= 0 and end > start:
-                parsed = json.loads(raw_text[start:end + 1])
-            else:
-                raise RuntimeError('Gemini returned invalid JSON for micro-lace detection.')
-        return {'available': True, **parsed}
-    except Exception as e:
-        return {'available': False, 'found': False, 'error': str(e)}
-
-
-CRYSTAL_DETECTION_PROMPT = """
-You are an expert textile embellishment and luxury-fashion visual inspection system.
-
-Analyze the uploaded reference image specifically for visible crystal/rhinestone/stone embellishment.
-This may be a Swarovski-type crystal reference, but you MUST NOT claim authenticity or brand origin from the image.
-Classify it only as a visual crystal/stone design reference.
-
-TASK:
-1. Determine whether a visible crystal/rhinestone/stone design is present.
-2. Describe the visual crystal design precisely enough to preserve it in an image-generation workflow.
-3. Identify visible cut/shape, approximate micro-size, spacing, density, repeat pattern, alignment, placement style,
-   reflective/shine behavior, surrounding thread/mesh/piping, and relationship to the lace.
-4. Look for tiny white/clear stones, faceted points, round stones, teardrops, hearts, flowers, geometric clusters,
-   borders, rows, repeated motifs, or other visible crystal geometry.
-5. Do NOT invent crystals that are not visible.
-6. Do NOT infer authenticity, manufacturer, or genuine Swarovski status.
-7. Return JSON only.
-
-JSON schema:
-{
-  "found": true,
-  "confidence": 0.0,
-  "reference_type": "swarovski_type_crystal_reference",
-  "design": {
-    "stone_shape": "",
-    "stone_scale": "micro",
-    "stone_size_description": "",
-    "cut_or_faceting": "",
-    "spacing": "",
-    "density": "",
-    "repeat_pattern": "",
-    "alignment": "",
-    "placement": "",
-    "shine_character": "",
-    "surrounding_structure": "",
-    "color_appearance": "",
-    "relationship_to_lace": ""
-  },
-  "description": "brief visual description"
-}
-
-If no visible crystal/stone design is present, return:
-{
-  "found": false,
-  "confidence": 0.0,
-  "reference_type": "swarovski_type_crystal_reference",
-  "design": {},
-  "description": ""
-}
-"""
-
-def gemini_crystal_design_read(image_bytes: bytes, mime_type: str) -> dict:
-    """Read visible crystal/rhinestone design from a Swarovski-type reference image."""
-    if not gemini_client:
-        return {'available': False, 'found': False, 'message': 'Gemini client is not configured.'}
-    try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_ANALYSIS_MODEL,
-            contents=[
-                {'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(image_bytes).decode('utf-8')}},
-                CRYSTAL_DETECTION_PROMPT,
-            ],
-            config=types.GenerateContentConfig(response_mime_type='application/json', automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
-        )
-        raw_text = (response.text or '{}').strip()
-        try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError:
-            start = raw_text.find('{')
-            end = raw_text.rfind('}')
-            if start >= 0 and end > start:
-                parsed = json.loads(raw_text[start:end + 1])
-            else:
-                raise RuntimeError('Gemini returned invalid JSON for crystal/Swarovski-type design reading.')
-        return {'available': True, 'model': GEMINI_ANALYSIS_MODEL, **parsed}
-    except Exception as e:
-        return {'available': False, 'found': False, 'error': str(e)}
-
 def detect_lace_strip(image_path: str, request_id: str) -> dict:
     """
     Detect a likely lace/border strip from the saree image using OpenCV.
@@ -616,13 +470,12 @@ def build_micro_lace_scale_instruction(saree_image_path: str, lace_image_path: O
     return f'MICRO-LACE SCALE LOCK — STRICT:\n- The provided lace image is a micro-detail reference.\n- Preserve the lace as a SMALL, NARROW, FINE border element.\n- Do NOT enlarge, thicken, widen, magnify, or turn it into a broad decorative strip.\n- Maintain the same relative visual scale seen in the source.\n- Reference crop width ratio to source image width is approximately {width_ratio:.4f}; use this as a scale guide.\n- Keep repeated micro motifs tiny, dense, and closely spaced.\n- Keep lace line thickness, stone size, motif spacing and border width proportionally consistent with the reference.\n- Never compensate for higher output resolution by making lace motifs larger.\n'
 
 def _make_lace_alpha(lace_bgr):
-    """Create a soft alpha mask for a lace reference while keeping its pixels intact."""
+    """Build an alpha mask for the lace without changing the lace RGB pixels."""
     if lace_bgr is None or lace_bgr.size == 0:
         return None
     h, w = lace_bgr.shape[:2]
-    # Estimate the background from the four corners. This works well for lace
-    # photographed/scanned on a plain fabric/paper background.
-    patch = max(2, min(h, w) // 12)
+    # Estimate the photographed/scanned background from the four corners.
+    patch = max(2, min(h, w) // 10)
     corners = np.concatenate([
         lace_bgr[:patch, :patch].reshape(-1, 3),
         lace_bgr[:patch, -patch:].reshape(-1, 3),
@@ -631,89 +484,85 @@ def _make_lace_alpha(lace_bgr):
     ], axis=0).astype(np.float32)
     bg = np.median(corners, axis=0)
     dist = np.linalg.norm(lace_bgr.astype(np.float32) - bg[None, None, :], axis=2)
-    # Keep pixels that are visually different from the reference background.
-    alpha = np.clip((dist - 12.0) * 8.0, 0, 255).astype(np.uint8)
+    # Soft mask: only background-like pixels become transparent.
+    alpha = np.clip((dist - 10.0) * 10.0, 0, 255).astype(np.uint8)
     alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
     return alpha
 
 
-def _overlay_lace_pixels(base_bgr, lace_bgr, x, y, target_w=None, target_h=None, alpha_strength=0.98):
-    """Paste the original lace pixels onto the generated image without AI redraw."""
+def _paste_original_lace(base_bgr, lace_bgr, x, y, target_w, target_h):
+    """Paste original lace pixels after generation; AI cannot redraw this layer."""
     if lace_bgr is None or lace_bgr.size == 0:
         return base_bgr
-    out = base_bgr.copy()
-    lh, lw = lace_bgr.shape[:2]
-    if target_w is None and target_h is None:
-        target_w, target_h = lw, lh
-    elif target_w is None:
-        target_h = max(1, int(target_h))
-        target_w = max(1, int(round(lw * target_h / max(1, lh))))
-    elif target_h is None:
-        target_w = max(1, int(target_w))
-        target_h = max(1, int(round(lh * target_w / max(1, lw))))
+    target_w = max(2, int(target_w))
+    target_h = max(2, int(target_h))
     lace = cv2.resize(lace_bgr, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
     alpha = _make_lace_alpha(lace)
     if alpha is None:
-        return out
-    alpha = (alpha.astype(np.float32) * float(alpha_strength) / 255.0)
+        return base_bgr
+
+    out = base_bgr.copy()
     H, W = out.shape[:2]
-    x = max(0, min(int(x), W - 1))
-    y = max(0, min(int(y), H - 1))
-    x2 = min(W, x + target_w)
-    y2 = min(H, y + target_h)
-    if x2 <= x or y2 <= y:
+    x1 = max(0, int(x))
+    y1 = max(0, int(y))
+    x2 = min(W, x1 + target_w)
+    y2 = min(H, y1 + target_h)
+    if x2 <= x1 or y2 <= y1:
         return out
-    crop = out[y:y2, x:x2].astype(np.float32)
-    lace_crop = lace[:y2-y, :x2-x].astype(np.float32)
-    a = alpha[:y2-y, :x2-x][..., None]
-    blended = crop * (1.0 - a) + lace_crop * a
-    out[y:y2, x:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+
+    crop = out[y1:y2, x1:x2].astype(np.float32)
+    lace_crop = lace[:y2-y1, :x2-x1].astype(np.float32)
+    a = (alpha[:y2-y1, :x2-x1].astype(np.float32) / 255.0)[..., None]
+    out[y1:y2, x1:x2] = np.clip(crop * (1.0 - a) + lace_crop * a, 0, 255).astype(np.uint8)
     return out
 
 
-def preserve_lace_after_generation(generated_path: str, lace_reference_path: str, orientation: str = 'horizontal'):
+def preserve_lace_after_generation(generated_path, lace_reference_path, orientation='horizontal'):
     """
-    Deterministic final-stage lace preservation.
+    Deterministic lace preservation.
 
-    Gemini generates the model/saree first. Then this function uses the ORIGINAL
-    uploaded lace pixels as the final texture layer. Gemini cannot redraw this
-    layer. Placement is intentionally conservative and micro-scale.
+    Gemini generates the model/saree once. After that, the original uploaded
+    lace pixels are composited locally. Gemini is never called again.
 
-    Set EXACT_LACE_PIXEL_PRESERVATION=false to disable this post-process.
+    NOTE: because a single generated image does not expose a machine-readable
+    garment mask, placement is a conservative micro-border heuristic. The lace
+    artwork itself is taken from the uploaded reference, not regenerated.
     """
     if os.getenv('EXACT_LACE_PIXEL_PRESERVATION', 'true').lower() not in {'1', 'true', 'yes', 'on'}:
         return False
     if not os.path.exists(generated_path) or not os.path.exists(lace_reference_path):
         return False
+
     base = cv2.imread(generated_path, cv2.IMREAD_COLOR)
     lace = cv2.imread(lace_reference_path, cv2.IMREAD_COLOR)
     if base is None or lace is None:
         return False
+
     H, W = base.shape[:2]
     lh, lw = lace.shape[:2]
-    horizontal = orientation != 'vertical'
-    # Keep the lace physically micro-scale. The original aspect ratio is never
-    # distorted; only uniform scaling is applied.
-    if horizontal:
-        target_w = max(80, int(W * 0.72))
-        target_h = max(2, int(round(lh * target_w / max(1, lw))))
-        # If the reference is unusually thick, cap its final height.
-        max_h = max(4, int(min(H, W) * 0.035))
-        if target_h > max_h:
-            target_h = max_h
-            target_w = max(80, int(round(lw * target_h / max(1, lh))))
-        x = max(0, (W - target_w) // 2)
-        y = int(H * 0.86)
-    else:
-        target_h = max(100, int(H * 0.72))
+    is_vertical = str(orientation).lower() == 'vertical'
+
+    # Keep the reference aspect ratio. Do not stretch the lace.
+    if is_vertical:
+        target_h = max(120, int(H * 0.72))
         target_w = max(2, int(round(lw * target_h / max(1, lh))))
         max_w = max(4, int(min(H, W) * 0.035))
         if target_w > max_w:
             target_w = max_w
-            target_h = max(100, int(round(lh * target_w / max(1, lw))))
+            target_h = max(120, int(round(lh * target_w / max(1, lw))))
         x = int(W * 0.82)
         y = max(0, (H - target_h) // 2)
-    result = _overlay_lace_pixels(base, lace, x, y, target_w=target_w, target_h=target_h)
+    else:
+        target_w = max(160, int(W * 0.72))
+        target_h = max(2, int(round(lh * target_w / max(1, lw))))
+        max_h = max(4, int(min(H, W) * 0.035))
+        if target_h > max_h:
+            target_h = max_h
+            target_w = max(160, int(round(lw * target_h / max(1, lh))))
+        x = max(0, (W - target_w) // 2)
+        y = int(H * 0.86)
+
+    result = _paste_original_lace(base, lace, x, y, target_w, target_h)
     cv2.imwrite(generated_path, result, [cv2.IMWRITE_PNG_COMPRESSION, 1])
     return True
 
@@ -758,57 +607,42 @@ def extract_generated_image_bytes(response):
     return (None, None)
 
 def generate_image_with_gemini(reference_image_path: str, generation_prompt: str, image_size: str='2K', background_image_path: Optional[str]=None, lace_image_path: Optional[str]=None, crystal_image_path: Optional[str]=None, crystal_lock_instruction: str=''):
-    """
-    Generate an image with Gemini 3.1 Flash Image and return:
-    raw image bytes, MIME type, and the model response.
-    """
+    """ONE AND ONLY ONE Gemini call: image references + final prompt."""
     if not gemini_client:
         raise RuntimeError('Gemini client is not configured. Set GEMINI_API_KEY in .env.')
-    image_size = image_size.upper()
+
+    image_size = str(image_size).upper()
     if image_size not in {'1K', '2K', '4K'}:
         image_size = '2K'
-    with open(reference_image_path, 'rb') as f:
-        reference_bytes = f.read()
-    extension = Path(reference_image_path).suffix.lower()
-    mime_type = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}.get(extension, 'image/jpeg')
-    lace_instruction = ''
+
+    def make_part(path):
+        with open(path, 'rb') as f:
+            data = f.read()
+        ext = Path(path).suffix.lower()
+        mime = {'.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.png':'image/png', '.webp':'image/webp'}.get(ext, 'image/png')
+        return {'inline_data': {'mime_type': mime, 'data': base64.b64encode(data).decode('utf-8')}}
+
+    # The final request contains the actual references so the image model can
+    # visually preserve the saree and especially the uploaded lace.
+    content_parts = [make_part(reference_image_path)]
     if lace_image_path and os.path.exists(lace_image_path):
-        lace_instruction = '\nMICRO-LACE DESIGN LOCK — ABSOLUTE / HIGHEST PRIORITY:\n- The uploaded lace-patta image is a LOCKED garment-design reference.\n- The uploaded lace image is an EXACT LOCKED DESIGN REFERENCE. The lace design itself must remain visually identical to the uploaded reference. Preserve exact motif geometry, motif sequence, motif density, spacing, width, thickness, edge shape, thread/mesh structure, beads/rhinestones, stone size, colors and placement. Do NOT alter, redesign, simplify, reinterpret, replace, recolor, enlarge, thicken, widen, magnify, or invent any lace detail. Only adapt its placement to the realistic saree drape; the lace design and proportions must remain unchanged. The lace must remain at the SAME MICRO SCALE as shown in the reference.\n- Preserve the exact lace geometry, motif sequence, motif density, spacing,\n  width, thickness, edge shape, thread/mesh structure, beads/rhinestones,\n  stone size and placement.\n- Do NOT enlarge, thicken, widen, magnify, stylize, simplify, redesign,\n  replace, recolor, reinterpret, or invent the lace.\n- Do NOT remove, merge, blur, hide, or crop away visible lace details.\n- Do NOT turn micro-lace into a large applique, broad panel, oversized border,\n  or decorative band.\n- Tiny motifs must remain tiny and dense in the final saree.\n- The lace is an exact visual + scale reference, not a general style reference.\n'
-    micro_lace_scale_instruction = build_micro_lace_scale_instruction(reference_image_path, lace_image_path)
-    crystal_instruction = ''
+        content_parts.append(make_part(lace_image_path))
     if crystal_image_path and os.path.exists(crystal_image_path):
-        crystal_instruction = '\nSWAROVSKI-TYPE / CRYSTAL DESIGN LOCK — VISUAL REFERENCE ONLY:\n- Use the uploaded crystal reference as the exact visual reference for the visible crystal/rhinestone design.\n- Preserve crystal micro-size, cut/shape, faceting, spacing, density, repeat pattern, alignment, placement and reflective character.\n- Preserve visible white/clear stone appearance and its relationship to the lace/garment.\n- DO NOT enlarge, exaggerate, simplify, redesign, recolor or invent the crystal arrangement.\n- DO NOT claim or imply authenticity; match only the visible design shown in the reference.\n- Higher output resolution MUST NOT increase the physical size of individual stones.\n'
-        if crystal_lock_instruction:
-            crystal_instruction += '\nCRYSTAL ANALYSIS LOCK:\n' + crystal_lock_instruction + '\n'
-    background_instruction = ''
+        content_parts.append(make_part(crystal_image_path))
     if background_image_path and os.path.exists(background_image_path):
-        background_instruction = '\nBACKGROUND REFERENCE:\n- A second uploaded image is provided as the background reference.\n- Use that image as the background/scene reference.\n- Preserve the background scene, environment, perspective, lighting direction,\n  overall composition and visual character as closely as possible.\n- Do not use a white background when a background reference is supplied.\n- Do not replace the background with an unrelated scene.\n'
-    final_prompt = f"\nUse the uploaded saree reference image as the highest-priority garment reference.\n\n{generation_prompt}\n\n{background_instruction}\n\n{lace_instruction}\n\n{micro_lace_scale_instruction}\n\nIMPORTANT:\n- The uploaded saree is the exact garment reference.\n- Preserve garment proportions from the reference; do not scale small lace\n  details into large decorative graphics.\n- Preserve the saree's original color, motifs, motif arrangement, border,\n  pallu, embroidery, zari, visible crystal/stone-like details, AND ALL LACE DETAILS.\n- The lace is a critical MICRO garment feature and must remain micro-scale.\n- Match the lace visual size relative to the saree border and saree body in the source; it must not become a large applique, panel, or oversized border.\n- If a lace reference image is supplied, use it as an exact pattern-and-scale\n  reference, not merely a style suggestion.\n- Preserve the exact lace width, physical scale, motif density, motif spacing,\n  edge shape, thread thickness, mesh, dots/beads, holes, trims and decorative\n  edging visible in the reference.\n- Do NOT enlarge, thicken, widen, magnify, stylize, simplify, merge, replace,\n  or redesign the lace.\n- The repeated lace motifs must remain small and dense exactly as in the\n  reference, with no oversized symbols or oversized gaps.\n- Keep the lace sharp without making its elements larger than the source.\n- Preserve the lace along every visible saree edge where it exists.\n- Do not redesign, recolor, replace, simplify, or invent the saree.\n- Keep the saree visually recognizable as the uploaded reference.\n- Generate a highly realistic adult Indian female fashion model.\n- Full-body standing composition.\n- Premium Indian fashion catalogue photography.\n- Natural realistic fabric drape.\n- The lace must remain physically and proportionally small, fine and narrow in the final garment exactly as shown by the reference.\n- Do not make the lace larger merely because output resolution is higher.\n- Return the generated image as the image output.\n"
-    content_parts = [{'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(reference_bytes).decode('utf-8')}}]
-    if background_image_path and os.path.exists(background_image_path):
-        with open(background_image_path, 'rb') as f:
-            background_bytes = f.read()
-        background_extension = Path(background_image_path).suffix.lower()
-        background_mime_type = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}.get(background_extension, 'image/jpeg')
-        content_parts.append({'inline_data': {'mime_type': background_mime_type, 'data': base64.b64encode(background_bytes).decode('utf-8')}})
-    if lace_image_path and os.path.exists(lace_image_path):
-        with open(lace_image_path, 'rb') as f:
-            lace_bytes = f.read()
-        lace_extension = Path(lace_image_path).suffix.lower()
-        lace_mime_type = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/png'}.get(lace_extension, 'image/png')
-        content_parts.append({'inline_data': {'mime_type': lace_mime_type, 'data': base64.b64encode(lace_bytes).decode('utf-8')}})
-    if crystal_image_path and os.path.exists(crystal_image_path):
-        with open(crystal_image_path, 'rb') as f:
-            crystal_bytes = f.read()
-        crystal_extension = Path(crystal_image_path).suffix.lower()
-        crystal_mime_type = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}.get(crystal_extension, 'image/png')
-        content_parts.append({'inline_data': {'mime_type': crystal_mime_type, 'data': base64.b64encode(crystal_bytes).decode('utf-8')}})
-    content_parts.append(final_prompt)
-    try:
-        from google.genai import types
-    except ImportError:
-        raise RuntimeError('google-genai is required. Run: python -m pip install -U google-genai')
-    response = gemini_client.models.generate_content(model=GEMINI_IMAGE_MODEL, contents=content_parts, config=types.GenerateContentConfig(response_modalities=['IMAGE'], image_config=types.ImageConfig(aspect_ratio='3:4', image_size=image_size), automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
+        content_parts.append(make_part(background_image_path))
+    content_parts.append(generation_prompt)
+
+    response = gemini_client.models.generate_content(
+        model=GEMINI_IMAGE_MODEL,
+        contents=content_parts,
+        config=types.GenerateContentConfig(
+            response_modalities=['IMAGE'],
+            image_config=types.ImageConfig(aspect_ratio='3:4', image_size=image_size),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+        )
+    )
+
     image_bytes, generated_mime = extract_generated_image_bytes(response)
     if not image_bytes:
         text_parts = []
@@ -816,10 +650,13 @@ def generate_image_with_gemini(reference_image_path: str, generation_prompt: str
             part_text = getattr(part, 'text', None)
             if part_text:
                 text_parts.append(part_text)
-        raise RuntimeError('Gemini image generation returned no image. Check GEMINI_IMAGE_MODEL, API access/billing, and the SDK version. ' + (' Gemini text response: ' + ' '.join(text_parts) if text_parts else ' No image data found in the response.'))
-    return (image_bytes, generated_mime or 'image/png')
+        raise RuntimeError(
+            'Gemini image generation returned no image. Check GEMINI_IMAGE_MODEL, API access/billing, and SDK version.'
+            + (' Gemini text response: ' + ' '.join(text_parts) if text_parts else '')
+        )
+    return image_bytes, generated_mime or 'image/png'
 
-@app.post('/api/saree/generate-all', summary='Single API for complete SareeViz generation', description='ONE API ONLY. Upload saree, exact micro-lace, optional Swarovski-type/crystal reference, and optional background. Gemini 3.7 Flash reads the micro-lace and crystal design, applies strict locks, creates the JSON-wise generation prompt, and Gemini 3.1 Flash Image generates the final image. Swarovski authenticity is NOT verified; only the visible crystal design is matched.')
+@app.post('/api/saree/generate-all', summary='Single API for complete SareeViz generation', description='ONE API ONLY. Upload saree, exact micro-lace, optional Swarovski-type/crystal reference, and optional background. OpenCV performs local analysis/lace detection, then ONE Gemini 3.1 Flash Image call uses the uploaded reference images and final prompt. Swarovski authenticity is NOT verified; only the visible crystal design is matched.')
 async def generate_all(saree_image: UploadFile=File(..., description='Choose File: saree design/reference image.'), lace_image: UploadFile=File(..., description='Choose File: exact micro-lace/patta reference image.'), crystal_reference_image: Optional[UploadFile]=File(None, description='Optional Choose File: Swarovski-type / crystal / rhinestone reference. Visual design matching only; authenticity is NOT verified.'), background_image: Optional[UploadFile]=File(None, description='Optional Choose File: background/scene reference image.'), custom_prompt: str=Form('', description='Optional custom prompt. Example: front-facing pose, full body, luxury fashion catalogue, studio lighting.'), image_size: str=Form('2K', description='Gemini image output size: 1K, 2K or 4K.'), gemini_analysis: bool=Form(False, description='False = faster OpenCV analysis only. True = also run Gemini 3.7 Flash semantic analysis.'), strict_lace_lock: bool=True, strict_crystal_lock: bool=True):
     started_at = time.perf_counter()
     micro_lace_lock_instruction = 'ABSOLUTE MICRO-LACE LOCK: Use the uploaded lace reference as an exact visual source. Keep the lace MICRO-SCALE, extremely narrow and fine. Preserve the exact repeating motif sequence, motif geometry, motif density, spacing, width, thickness, edge/piping, thread/mesh structure, white/stone/crystal-like micro details, teal/green base and red edge appearance as visible in the reference. DO NOT enlarge, thicken, widen, magnify, simplify, stylize, redesign, recolor, reinterpret, invent, merge, remove, blur or hide any lace detail. Never turn it into a broad/oversized border or panel. Higher output resolution MUST NOT increase the physical size of the lace motifs. Apply this lock everywhere the lace appears on the saree.'
@@ -884,23 +721,37 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
     with open(detection_path, 'w', encoding='utf-8') as f:
         json.dump(opencv_analysis, f, indent=2, ensure_ascii=False)
     analysis_seconds = round(time.perf_counter() - analysis_started, 3)
-    semantic_analysis = {'available': False, 'enabled': False, 'message': 'Gemini semantic analysis skipped for speed.'}
-    if gemini_analysis:
-        semantic_analysis = semantic_ai_analysis(saree_bytes, {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}.get(saree_ext, 'image/jpeg'))
-        semantic_analysis['enabled'] = True
+    # LOW-COST MODE: no Gemini semantic-analysis call.
+    semantic_analysis = {'available': False, 'enabled': False, 'message': 'Disabled for low-cost mode; OpenCV only.'}
     design_lock = build_design_lock(opencv_analysis, semantic_analysis)
     lock_name = f'{request_id}_design_lock.json'
     lock_path = os.path.join(ANALYSIS_DIR, lock_name)
     with open(lock_path, 'w', encoding='utf-8') as f:
         json.dump(design_lock, f, indent=2, ensure_ascii=False)
-    # FAST MODE: independent visual checks run concurrently.
-    lace_mime = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}.get(lace_ext, 'image/jpeg')
-    crystal_mime = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/jpeg'}.get(crystal_ext, 'image/jpeg')
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        lace_future = executor.submit(gemini_micro_lace_bbox, lace_bytes, lace_mime)
-        crystal_future = executor.submit(gemini_crystal_design_read, crystal_reference_bytes, crystal_mime) if (crystal_reference_path and crystal_reference_bytes) else None
-        lace_detection = lace_future.result()
-        crystal_read = crystal_future.result() if crystal_future else {'available': False, 'enabled': False, 'found': False, 'message': 'No Swarovski-type / crystal reference supplied.'}
+    # LOW-COST MODE: lace detection is local OpenCV; no Gemini analysis call.
+    local_lace = detect_lace_strip(lace_input_path, request_id)
+    local_img = cv2.imread(lace_input_path, cv2.IMREAD_UNCHANGED)
+    local_h, local_w = local_img.shape[:2] if local_img is not None else (1, 1)
+    local_bbox = local_lace.get('bbox', {}) if isinstance(local_lace, dict) else {}
+    lace_detection = {
+        'available': bool(local_lace.get('success')),
+        'found': bool(local_lace.get('success')),
+        'confidence': 1.0 if local_lace.get('success') else 0.0,
+        'orientation': 'vertical' if local_bbox.get('height', 0) >= local_bbox.get('width', 0) else 'horizontal',
+        'bbox': {
+            'x': round(local_bbox.get('x', 0) / max(1, local_w), 6),
+            'y': round(local_bbox.get('y', 0) / max(1, local_h), 6),
+            'width': round(local_bbox.get('width', 0) / max(1, local_w), 6),
+            'height': round(local_bbox.get('height', 0) / max(1, local_h), 6)
+        }
+    }
+    # LOW-COST MODE: no separate Gemini crystal-analysis call.
+    crystal_read = {
+        'available': False,
+        'enabled': False,
+        'found': bool(crystal_reference_path and crystal_reference_bytes),
+        'message': 'Crystal analysis disabled for low-cost mode.'
+    }
 
     lace_reference = None
     lace_path = None
@@ -928,13 +779,13 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
                 lace_name = f'{request_id}_lace_reference.png'
                 lace_path = os.path.abspath(os.path.join(ANALYSIS_DIR, lace_name))
                 cv2.imwrite(lace_path, lace_crop, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-                lace_reference = {'file_name': lace_name, 'local_path': lace_path, 'url': f'/design-maps/{lace_name}', 'width': x2 - x1, 'height': y2 - y1, 'micro_lace_locked': True, 'gemini_model': GEMINI_ANALYSIS_MODEL, 'confidence': lace_detection.get('confidence'), 'orientation': lace_detection.get('orientation'), 'bbox_original_pixels': {'x': x1, 'y': y1, 'width': x2 - x1, 'height': y2 - y1}}
+                lace_reference = {'file_name': lace_name, 'local_path': lace_path, 'url': f'/design-maps/{lace_name}', 'width': x2 - x1, 'height': y2 - y1, 'micro_lace_locked': True, 'confidence': lace_detection.get('confidence'), 'orientation': lace_detection.get('orientation'), 'bbox_original_pixels': {'x': x1, 'y': y1, 'width': x2 - x1, 'height': y2 - y1}}
     if not lace_reference:
         try:
             os.remove(lace_input_path)
         except OSError:
             pass
-        return {'success': False, 'request_id': request_id, 'status': 'micro_lace_not_detected', 'message': 'Gemini 3.7 Flash could not detect the micro-lace reference. Final image generation was stopped to avoid changing the lace.'}
+        return {'success': False, 'request_id': request_id, 'status': 'micro_lace_not_detected', 'message': 'Local OpenCV could not detect the micro-lace reference. Final image generation was stopped to avoid changing the lace.'}
     try:
         os.remove(lace_input_path)
     except OSError:
@@ -993,7 +844,34 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
     image_size = image_size.upper()
     if image_size not in {'1K', '2K', '4K'}:
         image_size = '2K'
-    generated_prompt = generated_prompt + '\n\nSTRICT MICRO-LACE DESIGN LOCK:\n' + micro_lace_lock_instruction
+    # Final request is a SINGLE Gemini image-generation call.
+    # The actual saree/lace/crystal/background references are included in that one call.
+    design_context = json.dumps({
+        'saree_design_analysis': opencv_analysis,
+        'micro_lace_detection': lace_detection,
+        'micro_lace_lock': {
+            'locked': True,
+            'scale': 'micro',
+            'exact_visual_reference_required': True,
+            'preserve_geometry': True,
+            'preserve_motif_sequence': True,
+            'preserve_density': True,
+            'preserve_spacing': True,
+            'preserve_width': True,
+            'preserve_thickness': True,
+            'do_not_enlarge': True,
+            'do_not_redesign': True,
+            'do_not_recolor': True
+        },
+        'crystal_design_analysis': crystal_read.get('design', {}) if isinstance(crystal_read, dict) else {}
+    }, ensure_ascii=False, separators=(',', ':'))
+    generated_prompt = (
+        generated_prompt
+        + '\n\nSTRICT MICRO-LACE DESIGN LOCK:\n'
+        + micro_lace_lock_instruction
+        + '\n\nSTRUCTURED DESIGN DATA (TEXT ONLY — FOLLOW EXACTLY):\n'
+        + design_context
+            )
     image_bytes_out, generated_mime = generate_image_with_gemini(saree_path, generated_prompt, image_size=image_size, background_image_path=background_path, lace_image_path=lace_path, crystal_image_path=crystal_reference_path, crystal_lock_instruction=crystal_lock_instruction)
     output_ext = '.png'
     if generated_mime == 'image/jpeg':
@@ -1015,13 +893,13 @@ async def generate_all(saree_image: UploadFile=File(..., description='Choose Fil
     except Exception as lace_post_error:
         print(f'WARNING: exact lace pixel preservation failed: {lace_post_error}')
     total_seconds = round(time.perf_counter() - started_at, 3)
-    metadata = {'request_id': request_id, 'status': 'complete_success', 'model': GEMINI_IMAGE_MODEL, 'analysis_model': GEMINI_ANALYSIS_MODEL, 'image_size': image_size, 'saree_reference': saree_name, 'lace_reference': lace_reference.get('file_name'), 'background_reference': background_name, 'crystal_reference': crystal_reference_name, 'crystal_design_read': crystal_read, 'micro_lace_locked': True, 'lace_design_lock': {'locked': True, 'scale': 'micro', 'exact_visual_reference': True, 'pattern_locked': True, 'allow_enlarge': False, 'allow_thicken': False, 'allow_redesign': False, 'allow_recolor': False}, 'custom_prompt': custom_prompt, 'generation_prompt_file': generation_name, 'local_path': output_path, 'url': f'/generated/{output_name}', 'performance': {'analysis_seconds': analysis_seconds, 'total_seconds': total_seconds}}
+    metadata = {'request_id': request_id, 'status': 'complete_success', 'model': GEMINI_IMAGE_MODEL, 'analysis_model': 'NONE (OpenCV only)', 'image_size': image_size, 'saree_reference': saree_name, 'lace_reference': lace_reference.get('file_name'), 'background_reference': background_name, 'crystal_reference': crystal_reference_name, 'crystal_design_read': crystal_read, 'micro_lace_locked': True, 'lace_design_lock': {'locked': True, 'scale': 'micro', 'exact_visual_reference': True, 'pattern_locked': True, 'allow_enlarge': False, 'allow_thicken': False, 'allow_redesign': False, 'allow_recolor': False}, 'custom_prompt': custom_prompt, 'generation_prompt_file': generation_name, 'local_path': output_path, 'url': f'/generated/{output_name}', 'performance': {'analysis_seconds': analysis_seconds, 'total_seconds': total_seconds}}
     complete_metadata_name = f'{request_id}_complete_generation.json'
     complete_metadata_path = os.path.join(ANALYSIS_DIR, complete_metadata_name)
     with open(complete_metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
     save_request_metadata(request_id, {'request_id': request_id, 'status': 'complete_success', 'saree_reference': saree_name, 'lace_reference': lace_reference.get('file_name'), 'crystal_reference': crystal_reference_name, 'background_reference': background_name, 'design_lock': lock_name, 'generation_prompt': generation_name, 'generated_image': f'/generated/{output_name}'})
-    return {'success': True, 'request_id': request_id, 'status': 'complete_success', 'workflow': ['saree_uploaded', 'request_id_created', 'design_analyzed', 'design_lock_created', 'micro_lace_detected', 'swarovski_type_crystal_read', 'crystal_design_locked', 'generation_prompt_created', 'final_image_generated'], 'references': {'saree': saree_name, 'micro_lace': lace_reference, 'crystal_reference': {'file_name': crystal_reference_name, 'url': f'/crystal-references/{crystal_reference_name}', 'read': crystal_read} if crystal_reference_name else None, 'background': background_name}, 'lace_design_lock': {'locked': True, 'scale': 'micro', 'exact_visual_reference': True, 'pattern_locked': True, 'motif_sequence_locked': True, 'motif_density_locked': True, 'spacing_locked': True, 'width_locked': True, 'edge_shape_locked': True, 'stone_size_locked': True, 'allow_enlarge': False, 'allow_thicken': False, 'allow_redesign': False, 'allow_recolor': False, 'allow_invent': False}, 'files': {'design_lock': f'/design-maps/{lock_name}', 'generation_prompt': f'/design-maps/{generation_name}', 'final_image': f'/generated/{output_name}'}, 'generated_image': {'file_name': output_name, 'local_path': output_path, 'url': f'/generated/{output_name}', 'mime_type': generated_mime, 'model': GEMINI_IMAGE_MODEL, 'image_size': image_size}, 'custom_prompt': custom_prompt, 'performance': {'analysis_seconds': analysis_seconds, 'total_seconds': total_seconds}, 'message': 'All steps completed in one API call: upload -> request ID -> analysis -> Design Lock -> micro-lace -> generation prompt -> final Gemini image.'}
+    return {'success': True, 'request_id': request_id, 'status': 'complete_success', 'workflow': ['saree_uploaded', 'request_id_created', 'design_analyzed', 'design_lock_created', 'micro_lace_detected', 'swarovski_type_crystal_read', 'crystal_design_locked', 'generation_prompt_created', 'final_image_generated'], 'references': {'saree': saree_name, 'micro_lace': lace_reference, 'crystal_reference': {'file_name': crystal_reference_name, 'url': f'/crystal-references/{crystal_reference_name}', 'read': crystal_read} if crystal_reference_name else None, 'background': background_name}, 'lace_design_lock': {'locked': True, 'scale': 'micro', 'exact_visual_reference': True, 'pattern_locked': True, 'motif_sequence_locked': True, 'motif_density_locked': True, 'spacing_locked': True, 'width_locked': True, 'edge_shape_locked': True, 'stone_size_locked': True, 'allow_enlarge': False, 'allow_thicken': False, 'allow_redesign': False, 'allow_recolor': False, 'allow_invent': False}, 'files': {'design_lock': f'/design-maps/{lock_name}', 'generation_prompt': f'/design-maps/{generation_name}', 'final_image': f'/generated/{output_name}'}, 'generated_image': {'file_name': output_name, 'local_path': output_path, 'url': f'/generated/{output_name}', 'mime_type': generated_mime, 'model': GEMINI_IMAGE_MODEL, 'image_size': image_size}, 'custom_prompt': custom_prompt, 'performance': {'analysis_seconds': analysis_seconds, 'total_seconds': total_seconds}, 'message': 'LOW-COST mode: OpenCV local analysis -> local lace detection -> ONE Gemini 3.1 Flash Image generation call with reference images.'}
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run('main:app', host='0.0.0.0', port=8000)
