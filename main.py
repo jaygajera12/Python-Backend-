@@ -337,12 +337,12 @@ def analyze_saree_opencv(image_path: str, max_side: int=1200):
         },
         'fine_detail': {
             'candidate_count': len(bright_candidates),
-            'candidates': bright_candidates[:5000],
+            'candidates': bright_candidates[:25],
             'note': 'OpenCV bright/reflective detail candidates. These are visual candidates and are not automatically classified as Swarovski or Siroki.'
         },
         'texture_regions': {
             'count': len(texture_regions),
-            'regions': texture_regions,
+            'regions': texture_regions[:100],
         },
         'horizontal_design_bands': horizontal_bands,
         'side_border_candidates': side_borders,
